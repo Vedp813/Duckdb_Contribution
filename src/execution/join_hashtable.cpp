@@ -6,6 +6,11 @@
 #include "duckdb/execution/ht_entry.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
+#include "duckdb/execution/vectorized_probe.hpp"
+#include "duckdb/common/types/row/tuple_data_collection.hpp"
+#include "duckdb/common/types/row/tuple_data_iterator.hpp"
+
+
 
 namespace duckdb {
 using ValidityBytes = JoinHashTable::ValidityBytes;
@@ -21,6 +26,7 @@ JoinHashTable::SharedState::SharedState()
 JoinHashTable::ProbeState::ProbeState()
     : SharedState(), ht_offsets_v(LogicalType::UBIGINT), ht_offsets_dense_v(LogicalType::UBIGINT),
       non_empty_sel(STANDARD_VECTOR_SIZE) {
+		
 }
 
 JoinHashTable::InsertState::InsertState(const JoinHashTable &ht)
@@ -749,8 +755,56 @@ void JoinHashTable::InitializeScanStructure(ScanStructure &scan_structure, DataC
 	scan_structure.count = PrepareKeys(keys, key_state.vector_data, current_sel, scan_structure.sel_vector, false);
 }
 
+
 void JoinHashTable::Probe(ScanStructure &scan_structure, DataChunk &keys, TupleDataChunkState &key_state,
                           ProbeState &probe_state, optional_ptr<Vector> precomputed_hashes) {
+    
+	#if defined(__AVX2__) || defined(__ARM_NEON)
+
+	// Local lambda to get int32 build keys
+	auto GetBuildKeysINT32 = [&](idx_t &count) -> int32_t * {
+		if (equality_types.size() != 1 || equality_types[0].InternalType() != PhysicalType::INT32) {
+			return nullptr;
+		}
+	
+		auto &collection = *data_collection;
+		TupleDataChunkIterator iterator(collection, TupleDataPinProperties::KEEP_EVERYTHING_PINNED, false);
+		if (iterator.Done()) {
+			count = 0;
+			return nullptr;
+		}
+	
+		count = iterator.GetCurrentChunkCount();
+		auto row_locations = iterator.GetRowLocations();
+		auto key_column_idx = equality_predicate_columns[0];
+		const auto &offsets = layout_ptr->GetOffsets();
+		return reinterpret_cast<int32_t *>(row_locations[0] + offsets[key_column_idx]);
+	};
+	
+	auto *probe_keys = FlatVector::GetData<int32_t>(keys.data[0]);
+	auto probe_count = keys.size();
+	
+	idx_t build_count;
+	int32_t *build_keys = GetBuildKeysINT32(build_count);
+	
+	if (build_keys) {
+		std::vector<size_t> matches;
+	
+		#if defined(__AVX2__)
+		VectorizedProbe_AVX2(probe_keys, probe_count, build_keys, build_count, matches);
+		printf("[SIMD-AVX2] Probed %zu keys, got %zu matches\n", probe_count, matches.size());
+		#elif defined(__ARM_NEON)
+		VectorizedProbe_NEON(probe_keys, probe_count, build_keys, build_count, matches);
+		printf("[SIMD-NEON] Probed %zu keys, got %zu matches\n", probe_count, matches.size());
+		#else
+		printf("[SIMD] No supported SIMD backend\n");
+		#endif
+	}
+	#endif
+
+							
+													
+
 	const SelectionVector *current_sel;
 	InitializeScanStructure(scan_structure, keys, key_state, current_sel);
 	if (scan_structure.count == 0) {
