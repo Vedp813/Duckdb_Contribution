@@ -759,49 +759,57 @@ void JoinHashTable::InitializeScanStructure(ScanStructure &scan_structure, DataC
 void JoinHashTable::Probe(ScanStructure &scan_structure, DataChunk &keys, TupleDataChunkState &key_state,
                           ProbeState &probe_state, optional_ptr<Vector> precomputed_hashes) {
     
-	#if defined(__AVX2__) || defined(__ARM_NEON)
+							#if defined(__AVX2__) || defined(__ARM_NEON)
 
-	// Local lambda to get int32 build keys
-	auto GetBuildKeysINT32 = [&](idx_t &count) -> int32_t * {
-		if (equality_types.size() != 1 || equality_types[0].InternalType() != PhysicalType::INT32) {
-			return nullptr;
-		}
-	
-		auto &collection = *data_collection;
-		TupleDataChunkIterator iterator(collection, TupleDataPinProperties::KEEP_EVERYTHING_PINNED, false);
-		if (iterator.Done()) {
-			count = 0;
-			return nullptr;
-		}
-	
-		count = iterator.GetCurrentChunkCount();
-		auto row_locations = iterator.GetRowLocations();
-		auto key_column_idx = equality_predicate_columns[0];
-		const auto &offsets = layout_ptr->GetOffsets();
-		return reinterpret_cast<int32_t *>(row_locations[0] + offsets[key_column_idx]);
-	};
-	
-	auto *probe_keys = FlatVector::GetData<int32_t>(keys.data[0]);
-	auto probe_count = keys.size();
-	
-	idx_t build_count;
-	int32_t *build_keys = GetBuildKeysINT32(build_count);
-	
-	if (build_keys) {
-		std::vector<size_t> matches;
-	
-		#if defined(__AVX2__)
-		VectorizedProbe_AVX2(probe_keys, probe_count, build_keys, build_count, matches);
-		printf("[SIMD-AVX2] Probed %zu keys, got %zu matches\n", probe_count, matches.size());
-		#elif defined(__ARM_NEON)
-		VectorizedProbe_NEON(probe_keys, probe_count, build_keys, build_count, matches);
-		printf("[SIMD-NEON] Probed %zu keys, got %zu matches\n", probe_count, matches.size());
-		#else
-		printf("[SIMD] No supported SIMD backend\n");
-		#endif
-	}
-	#endif
-
+							// Local lambda to get int32 build keys
+							auto GetBuildKeysINT32 = [&](idx_t &count) -> int32_t * {
+								if (equality_types.size() != 1 || equality_types[0].InternalType() != PhysicalType::INT32) {
+									
+									return nullptr;
+								}
+							
+								auto &collection = *data_collection;
+								TupleDataChunkIterator iterator(collection, TupleDataPinProperties::KEEP_EVERYTHING_PINNED, false);
+								if (iterator.Done()) {
+						
+									count = 0;
+									return nullptr;
+								}
+							
+								count = iterator.GetCurrentChunkCount();
+								auto row_locations = iterator.GetRowLocations();
+								auto key_column_idx = equality_predicate_columns[0];
+								const auto &offsets = layout_ptr->GetOffsets();
+								return reinterpret_cast<int32_t *>(row_locations[0] + offsets[key_column_idx]);
+							};
+				
+							
+							auto *probe_keys = FlatVector::GetData<int32_t>(keys.data[0]);
+							auto probe_count = keys.size();
+							
+							idx_t build_count;
+							int32_t *build_keys = GetBuildKeysINT32(build_count);
+							
+							if (build_keys) {
+							
+								std::vector<size_t> matches;
+							
+								#if defined(__AVX2__)
+					
+								VectorizedProbe_AVX2(probe_keys, probe_count, build_keys, build_count, matches);
+							
+								#elif defined(__ARM_NEON)
+								
+								VectorizedProbe_NEON(probe_keys, probe_count, build_keys, build_count, matches);
+								
+								#else
+								
+								#endif
+							} else {
+								
+							}
+							#endif
+							
 							
 													
 

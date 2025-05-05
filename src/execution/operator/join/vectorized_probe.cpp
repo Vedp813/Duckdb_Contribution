@@ -9,10 +9,6 @@
 #include <immintrin.h>
 #endif
 
-#ifdef __ARM_NEON
-#include <arm_neon.h>
-#endif
-
 namespace duckdb {
 
 void VectorizedProbe_AVX2(const int32_t *probe_keys, size_t probe_count,
@@ -53,7 +49,7 @@ void VectorizedProbe_AVX2(const int32_t *probe_keys, size_t probe_count,
 
     auto end = high_resolution_clock::now();
     double elapsed_ms = duration<double, std::milli>(end - start).count();
-    printf("[SIMD-AVX2] Probe complete. Total matches: %zu in %.2f ms\n", total_matches, elapsed_ms);
+    
 #else
     // Scalar fallback
     for (size_t i = 0; i < probe_count; ++i) {
@@ -65,25 +61,29 @@ void VectorizedProbe_AVX2(const int32_t *probe_keys, size_t probe_count,
             }
         }
     }
-    printf("[Scalar] Probe complete. Total matches: %zu\n", total_matches);
+    
 #endif
 }
 
 #ifdef __ARM_NEON
+#include <arm_neon.h>
 void VectorizedProbe_NEON(const int32_t *probe_keys, size_t probe_count,
                           const int32_t *hash_table_keys, size_t table_count,
                           std::vector<size_t> &matched_indices) {
-    printf("[NEON] Probing %zu probe keys vs %zu build keys\n", probe_count, table_count);
+                    
+    fflush(stdout);
     for (size_t i = 0; i < probe_count; ++i) {
         int32_t probe_key = probe_keys[i];
         int32x4_t probe_vec = vdupq_n_s32(probe_key);
 
         size_t j = 0;
         for (; j + 4 <= table_count; j += 4) {
-            int32x4_t table_vec = vld1q_s32(&hash_table_keys[j]);
+            int32x4_t table_vec = vld1q_s32(reinterpret_cast<const int32_t*>(&hash_table_keys[j]));
+
             uint32x4_t cmp = vceqq_s32(probe_vec, table_vec);
-            uint32_t result[4];
-            vst1q_u32(result, cmp);  // Store comparison result
+
+            alignas(16) uint32_t result[4];
+            vst1q_u32(result, cmp);
 
             for (int k = 0; k < 4; ++k) {
                 if (result[k] == 0xFFFFFFFF) {
@@ -101,5 +101,6 @@ void VectorizedProbe_NEON(const int32_t *probe_keys, size_t probe_count,
     }
 }
 #endif
+
 
 } // namespace duckdb
